@@ -115,9 +115,58 @@
     </div>
   </div>
 
-  <div style="display: flex; gap: 15px; flex-wrap: wrap; justify-content: center;">
-    <button onclick="socket.emit('feed_phase')" id="btnFeed">🍖 Накормить всех</button>
-  </div>
+  <div style="display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; margin-top: 20px;">
+    <!-- Кнопка: Взять выбранную карту в руку -->
+    <button id="btnTake" onclick="handleTakeCard()" style="background-color: #3498db;">🖐 Взять в руку</button>
+    
+    <!-- Кнопка: Сыграть выбранную карту на поле -->
+    <button id="btnPlay" onclick="handlePlayCard()" style="background-color: #2ecc71;">🎮 Сыграть на поле</button>
+    
+    <!-- Кнопка: Фаза кормления -->
+    <button id="btnFeed" onclick="socket.emit('feed_phase')" style="background-color: #f39c12;">🍖 Фаза кормления</button>
+</div>
+
+<script>
+  // ... (весь твой предыдущий код скрипта остается здесь без изменений) ...
+  
+  // ДОБАВЬ ЭТИ ТРИ ФУНКЦИИ ВНИЗУ СКРИПТА, ПЕРЕД ЗАКРЫВАЮЩИМ </script>
+
+  function handleTakeCard() {
+      if (selectedCardId === null) {
+          log("⚠️ Сначала выберите карту из колоды!");
+          return;
+      }
+      // Проверяем, есть ли карта с таким ID в колоде (защита от ошибок)
+      const isInDeck = gameState?.deck?.some(c => c.id === selectedCardId);
+      
+      if (isInDeck) {
+          socket.emit('take_card', selectedCardId);
+          log(`Запрос: взять карту ID ${selectedCardId}`);
+          selectedCardId = null; // Снимаем выделение
+          document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+      } else {
+          log("❌ Эта карта уже не в колоде!");
+      }
+  }
+
+  function handlePlayCard() {
+      if (selectedCardId === null) {
+          log("⚠️ Сначала выберите карту из руки!");
+          return;
+      }
+      
+      const isInHand = gameState?.hand?.some(c => c.id === selectedCardId);
+      if (isInHand) {
+          socket.emit('play_card', selectedCardId);
+          log(`Запрос: сыграть карту ID ${selectedCardId}`);
+          selectedCardId = null;
+          document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+      } else {
+          log("❌ Этой карты нет в вашей руке!");
+      }
+  }
+</script>
+
   
   <div id="log">Лог событий...</div>
 
