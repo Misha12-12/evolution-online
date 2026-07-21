@@ -43,7 +43,6 @@
     .card {
       width: 90px;
       height: 130px;
-      /* Градиент будет задаваться через JS в зависимости от типа */
       background: linear-gradient(145deg, #3498db, #2980b9); 
       border-radius: 12px;
       position: relative;
@@ -69,15 +68,18 @@
     button { 
       padding: 12px 24px; 
       font-size: 16px; 
-      background-color: #f39c12; 
-      color: white; 
       border: none; 
       border-radius: 6px; 
       cursor: pointer; 
       margin-top: 10px; 
       transition: background 0.2s;
+      color: white;
     }
-    button:hover { background-color: #d35400; }
+    button:hover { opacity: 0.9; }
+
+    #btnTake { background-color: #3498db; } /* Синий */
+    #btnPlay { background-color: #2ecc71; }  /* Зеленый */
+    #btnFeed { background-color: #f39c12; }  /* Оранжевый */
 
     #log { 
       margin-top: 20px; 
@@ -116,70 +118,25 @@
   </div>
 
   <div style="display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; margin-top: 20px;">
-    <!-- Кнопка: Взять выбранную карту в руку -->
-    <button id="btnTake" onclick="handleTakeCard()" style="background-color: #3498db;">🖐 Взять в руку</button>
-    
-    <!-- Кнопка: Сыграть выбранную карту на поле -->
-    <button id="btnPlay" onclick="handlePlayCard()" style="background-color: #2ecc71;">🎮 Сыграть на поле</button>
-    
-    <!-- Кнопка: Фаза кормления -->
-    <button id="btnFeed" onclick="socket.emit('feed_phase')" style="background-color: #f39c12;">🍖 Фаза кормления</button>
-</div>
+    <button id="btnTake" onclick="handleTakeCard()">🖐 Взять в руку</button>
+    <button id="btnPlay" onclick="handlePlayCard()">🎮 Сыграть на поле</button>
+    <button id="btnFeed" onclick="handleFeedPhase()">🍖 Фаза кормления</button>
+  </div>
 
-<script>
-  // ... (весь твой предыдущий код скрипта остается здесь без изменений) ...
-  
-  // ДОБАВЬ ЭТИ ТРИ ФУНКЦИИ ВНИЗУ СКРИПТА, ПЕРЕД ЗАКРЫВАЮЩИМ </script>
-
-  function handleTakeCard() {
-      if (selectedCardId === null) {
-          log("⚠️ Сначала выберите карту из колоды!");
-          return;
-      }
-      // Проверяем, есть ли карта с таким ID в колоде (защита от ошибок)
-      const isInDeck = gameState?.deck?.some(c => c.id === selectedCardId);
-      
-      if (isInDeck) {
-          socket.emit('take_card', selectedCardId);
-          log(`Запрос: взять карту ID ${selectedCardId}`);
-          selectedCardId = null; // Снимаем выделение
-          document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
-      } else {
-          log("❌ Эта карта уже не в колоде!");
-      }
-  }
-
-  function handlePlayCard() {
-      if (selectedCardId === null) {
-          log("⚠️ Сначала выберите карту из руки!");
-          return;
-      }
-      
-      const isInHand = gameState?.hand?.some(c => c.id === selectedCardId);
-      if (isInHand) {
-          socket.emit('play_card', selectedCardId);
-          log(`Запрос: сыграть карту ID ${selectedCardId}`);
-          selectedCardId = null;
-          document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
-      } else {
-          log("❌ Этой карты нет в вашей руке!");
-      }
-  }
-</script>
-
-  
   <div id="log">Лог событий...</div>
 
 <script>
   const socket = io();
+  
+  // Глобальные переменные (объявляем ОДИН раз в начале скрипта)
+  let gameState = {};
+  let selectedCardId = null; 
 
   const elDeck = document.getElementById('deck');
   const elHand = document.getElementById('hand');
   const elField = document.getElementById('field');
   const elLog = document.getElementById('log');
   const elStatus = document.getElementById('status');
-
-  let selectedCardId = null; // ID выбранной карты
 
   function log(msg) {
       elLog.innerText = `[${new Date().toLocaleTimeString()}] ${msg}\n` + elLog.innerText;
@@ -190,16 +147,13 @@
     const cardEl = document.createElement('div');
     cardEl.className = 'card';
     
-    // Выбираем цвет в зависимости от типа
     let bgColor = '#3498db';
     if (card.css === 'type-predator') bgColor = '#e74c3c';
     else if (card.css === 'type-herbivore') bgColor = '#2ecc71';
-    else bgColor = '#9b59b6'; // special
+    else bgColor = '#9b59b6';
 
-    // Применяем градиент
     cardEl.style.background = `linear-gradient(145deg, ${bgColor}, ${darkenColor(bgColor)})`;
 
-    // HTML внутри карточки
     cardEl.innerHTML = `
       <span class="card-power">${card.power}</span>
       <div style="flex-grow:1; display:flex; align-items:center; justify-content:center;">
@@ -215,7 +169,6 @@
         cardEl.classList.remove('selected');
         log(`Карта ${card.id} снята с выбора`);
       } else {
-        // Снимаем выделение со всех остальных
         document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
         
         selectedCardId = card.id;
@@ -227,7 +180,6 @@
     return cardEl;
   }
 
-  // Вспомогательная функция для затемнения цвета (для градиента)
   function darkenColor(hex) {
     let color = hex.replace('#', '');
     if (color.length === 3) color = color.split('').map(c => c + c).join('');
@@ -238,36 +190,17 @@
     return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
   }
 
-  // --- ОТРИСОВКА: Рисует карты в зонах ---
   function render(state) {
-      // Очищаем зоны
       elDeck.innerHTML = '';
       elHand.innerHTML = '';
       elField.innerHTML = '';
 
       if (!state) return;
 
-      // Рисуем колоду
-      state.deck.forEach(card => {
-          const cardEl = createCardElement(card);
-          elDeck.appendChild(cardEl);
-      });
-
-      // Рисуем руку
-      state.hand.forEach(card => {
-          const cardEl = createCardElement(card);
-          // Для карт в руке можно добавить дополнительную логику клика (например, сыграть)
-          elHand.appendChild(cardEl);
-      });
-
-      // Рисуем поле
-      state.field.forEach(card => {
-          const cardEl = createCardElement(card);
-          elField.appendChild(cardEl);
-      });
+      state.deck.forEach(card => elDeck.appendChild(createCardElement(card)));
+      state.hand.forEach(card => elHand.appendChild(createCardElement(card)));
+      state.field.forEach(card => elField.appendChild(createCardElement(card)));
   }
-
-  // --- ОБРАБОТЧИКИ СОБЫТИЙ ---
 
   socket.on('connect', () => {
       elStatus.innerText = "Статус: Подключено к серверу ✅";
@@ -279,22 +212,60 @@
   });
 
   socket.on('init_state', (state) => {
+      gameState = state; // Сохраняем состояние глобально
       log("Получено начальное состояние от сервера.");
       render(state);
       elStatus.innerText = "Статус: Игра началась ✅";
   });
 
   socket.on('update_state', (state) => {
+      gameState = state; // Обновляем состояние глобально
       log("Состояние обновлено сервером!");
       render(state);
   });
 
-  // Кнопка "Накормить"
-  document.getElementById('btnFeed').addEventListener('click', () => {
+  // --- ФУНКЦИИ КНОПОК (используют глобальную переменную selectedCardId) ---
+
+  function handleTakeCard() {
+      if (selectedCardId === null) {
+          log("⚠️ Сначала выберите карту из колоды!");
+          return;
+      }
+      
+      const isInDeck = gameState.deck.some(c => c.id === selectedCardId);
+      
+      if (isInDeck) {
+          socket.emit('take_card', selectedCardId);
+          log(`Запрос: взять карту ID ${selectedCardId}`);
+          // Сброс выбора происходит на сервере, но можно сбросить и тут для UX
+          selectedCardId = null; 
+          document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+      } else {
+          log("❌ Эта карта уже не в колоде!");
+      }
+  }
+
+  function handlePlayCard() {
+      if (selectedCardId === null) {
+          log("⚠️ Сначала выберите карту из руки!");
+          return;
+      }
+      
+      const isInHand = gameState.hand.some(c => c.id === selectedCardId);
+      if (isInHand) {
+          socket.emit('play_card', selectedCardId);
+          log(`Запрос: сыграть карту ID ${selectedCardId}`);
+          selectedCardId = null;
+          document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+      } else {
+          log("❌ Этой карты нет в вашей руке!");
+      }
+  }
+
+  function handleFeedPhase() {
       socket.emit('feed_phase');
       log("Отправлен запрос на фазу кормления...");
-  });
-
+  }
 </script>
 </body>
 </html>
