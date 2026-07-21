@@ -7,50 +7,53 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
-// 1. Раздаем статические файлы (твой index.html лежит в папке public)
-app.use(express.static(path.join(__dirname, 'public')));
+// --- ГЛАВНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ ---
+// Теперь сервер ищет файлы прямо там, где лежит server.js.
+// Это решает проблему, если ты не смог создать папку public на GitHub.
+app.use(express.static(__dirname)); 
+// -------------------------------
 
-// Хранилище состояния игры. 
-// В реальной игре тут должна быть база данных, но для старта хватит памяти сервера.
+// Хранилище состояния игры (в памяти сервера)
 let gameState = {
     deck: [],
     hand: [],
     field: [],
     log: ['Сервер запущен...'],
-    currentPlayer: 0 // 0 - Игрок 1, 1 - Игрок 2
+    currentPlayer: 0
 };
+
+// Простая функция инициализации колоды (для теста)
+function initDeck() {
+    const CARD_TYPES = [
+        { type: 'Травоядное', power: 2, css: 'type-herbivore' },
+        { type: 'Хищник', power: 4, css: 'type-predator' }
+    ];
+    gameState.deck = [];
+    for(let i = 0; i < 10; i++) {
+        const t = CARD_TYPES[Math.floor(Math.random() * CARD_TYPES.length)];
+        gameState.deck.push({ 
+            id: i, 
+            ...t, 
+            hunger: t.type === 'Хищник' ? 1 : 0 
+        });
+    }
+}
+initDeck();
 
 io.on('connection', (socket) => {
     console.log('Игрок подключился:', socket.id);
     
-    // При подключении сразу отправляем текущее состояние игры
+    // Отправляем текущее состояние сразу при подключении
     socket.emit('init_state', gameState);
 
-    // --- ОБРАБОТКА ХОДОВ ---
-    
-    // Игрок хочет взять карту из колоды
-    socket.on('take_card', (cardId) => {
-        // Тут должна быть сложная проверка: чей сейчас ход, есть ли карта в колоде и т.д.
-        // Для примера просто эмулируем действие и обновляем состояние
-        gameState.log.unshift(`[${socket.id}] Взял карту (ID: ${cardId})`);
+    // Слушаем ходы
+    socket.on('move_request', (data) => {
+        // ТУТ БУДЕТ ТВОЯ ЛОГИКА ИГРЫ
         
-        // Рассылаем новое состояние всем подключенным
-        io.emit('update_state', gameState);
-    });
-
-    // Игрок выложил карту на поле
-    socket.on('play_card', (cardId) => {
-        gameState.log.unshift(`[${socket.id}] Выложил карту (ID: ${cardId}) на поле`);
-        io.emit('update_state', gameState);
-    });
-
-    // Фаза кормления
-    socket.on('feed_phase', () => {
-        gameState.log.unshift('🍖 ЗАПУЩЕНА ФАЗА ПИТАНИЯ!');
-        // Здесь вызывается твоя сложная логика эволюции
-        // applySymbiosis(), processPredators() и т.д.
-        // Но менять gameState нужно аккуратно!
+        // Эмуляция действия для теста:
+        gameState.log.unshift(`[Игрок ${socket.id}] сделал ход: ${JSON.stringify(data)}`);
         
+        // Рассылаем обновленное состояние всем подключенным игрокам
         io.emit('update_state', gameState);
     });
 
@@ -59,6 +62,7 @@ io.on('connection', (socket) => {
     });
 });
 
+// Render сам подставит порт через process.env.PORT
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Сервер запущен на порту ${PORT}`);
