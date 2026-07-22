@@ -6,116 +6,194 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
+// Раздаем статические файлы (наш index.html)
 app.use(express.static(__dirname));
 
+// --- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ИГРЫ ---
 let gameState = {
     deck: [],
-    hand: [],
-    field: [],
+    field: [], // Массив: { playerId, card, isDead }
     log: ['Сервер запущен...'],
-    currentPlayer: 0
+    players: [], // Список socket.id игроков
+    currentTurnIndex: 0,
+    phase: 'draw' // 'draw' (брать), 'play' (разыгрывать), 'feed' (кормить)
 };
 
+// Хранилище рук: { 'socket.id': [cards...] }
+const playerHands = {}; 
+
+// Инициализация колоды
 function initDeck() {
     const CARD_TYPES = [
-        { type: 'Травоядное', power: 2, css: 'type-herbivore' },
-        { type: 'Хищник', power: 4, css: 'type-predator' }
+        { type: 'Травоядное', power: 2, css: 'type-herbivore', hunger: 0 },
+        { type: 'Хищник', power: 4, css: 'type-predator', hunger: 1 }
     ];
     gameState.deck = [];
-    for(let i = 0; i < 10; i++) {
+    // Создаем 40 карт для долгой игры
+    for(let i = 0; i < 40; i++) {
         const t = CARD_TYPES[Math.floor(Math.random() * CARD_TYPES.length)];
         gameState.deck.push({ 
-            id: i, 
-            ...t, 
-            hunger: t.type === 'Хищник' ? 1 : 0 // У хищников голод 1, у травоядных 0
+            id: i + 1000, 
+            ...t 
         });
     }
+    // Перемешиваем
     gameState.deck.sort(() => Math.random() - 0.5);
 }
 initDeck();
 
 io.on('connection', (socket) => {
-    console.log('Игрок подключился:', socket.id);
-    socket.emit('init_state', gameState);
+    console.log('👤 Игрок подключился:', socket.id);
+    
+    // 1. Инициализируем руку для нового игрока
+    playerHands[socket.id] = [];
+    gameState.players.push(socket.id);
 
-    // --- Взять карту ---
+    // Отправляем начальное состояние только этому игроку
+    sendStateToPlayer(socket.id);
+    io.emit('player_joined', { playersCount: gameState.players.length });
+
+    socket.on('disconnect', () => {
+        console.log('🚪 Игрок ушел:', socket.id);
+        gameState.players = gameState.players.filter(id => id !== socket.id);
+        delete playerHands[socket.id];
+        io.emit('player_left', { playersCount: gameState.players.length });
+    });
+
+    // --- ДЕЙСТВИЯ ИГРОКА ---
+
+    // Взять карту
     socket.on('take_card', (cardId) => {
-        const cardIndex = gameState.deck.findIndex(c => c.id === cardId);
-        if (cardIndex !== -1) {
-            const card = gameState.deck.splice(cardIndex, 1)[0];
-            gameState.hand.push(card);
-            gameState.log.unshift(`[Игрок ${socket.id}] взял карту ID:${card.id}`);
-            io.emit('update_state', gameState);
-        }
-    });
+        if (gameState.phase !== 'draw') return;
+        if (socket.id !== getCurrentPlayerId()) return; // Только чей ход
 
-    // --- Сыграть карту ---
-    socket.on('play_card', (cardId) => {
-        const handIndex = gameState.hand.findIndex(c => c.id === cardId);
-        if (handIndex !== -1) {
-            const card = gameState.hand.splice(handIndex, 1)[0];
-            gameState.field.push(card);
-            gameState.log.unshift(`[Игрок ${socket.id}] сыграл карту ID:${card.id}`);
-            io.emit('update_state', gameState);
-        }
-    });
-
-    // --- ФАЗА КОРМЛЕНИЯ (НОВАЯ ЛОГИКА) ---
-    socket.on('feed_phase', () => {
-        gameState.log.unshift(`[Фаза кормления] Начинаем кормление...`);
-        
-        // 1. Сначала обрабатываем Травоядных (они просто едят траву)
-        for (let i = gameState.field.length - 1; i >= 0; i--) {
-            const card = gameState.field[i];
-            if (card.type === 'Травоядное') {
-                // Травоядное всегда наедается, если у него был голод (хотя в нашей механике у них голод 0)
-                // Но оставим логику на будущее: если вдруг добавим механику "переедания"
-                card.hunger = 0; 
-            }
-        }
-
-        // 2. Теперь обрабатываем Хищников
-        // ВАЖНО: Мы проходим циклом, пока есть хищники, которым нужно есть.
-        // Это позволяет одному хищнику съесть одного травоядного за ход.
-        let predatorsFed = true;
-        
-        while(predatorsFed) {
-            predatorsFed = false; // Предполагаем, что никто больше не поест
+        const idx = gameState.deck.findIndex(c => c.id === cardId);
+        if (idx !== -1) {
+            const card = gameState.deck.splice(idx, 1)[0];
+            playerHands[socket.id].push(card);
             
-            for (let i = gameState.field.length - 1; i >= 0; i--) {
-                const card = gameState.field[i];
+            gameState.log.unshift(`🖐 Игрок ${socket.id.substring(0,4)} взял карту: ${card.type}`);
+            broadcastState();
+        } else {
+            socket.emit('error', 'Карта не найдена в колоде');
+        }
+    });
+
+    // Сыграть карту
+    socket.on('play_card', (cardId) => {
+        if (gameState.phase !== 'play') return;
+        if (socket.id !== getCurrentPlayerId()) return;
+
+        const handIdx = playerHands[socket.id].findIndex(c => c.id === cardId);
+        if (handIdx !== -1) {
+            const card = playerHands[socket.id].splice(handIdx, 1)[0];
+            
+            // Кладем на поле, помечая владельца
+            gameState.field.push({ playerId: socket.id, card: card, isDead: false });
+            
+            gameState.log.unshift(`🎮 Игрок ${socket.id.substring(0,4)} выложил: ${card.type}`);
+            broadcastState();
+        } else {
+            socket.emit('error', 'Карты нет в вашей руке');
+        }
+    });
+
+    // Конец хода
+    socket.on('end_turn', () => {
+        if (socket.id !== getCurrentPlayerId()) return;
+
+        let nextIndex = gameState.currentTurnIndex + 1;
+        
+        // Если круг замкнулся -> Фаза кормления
+        if (nextIndex >= gameState.players.length) {
+            nextIndex = 0;
+            gameState.phase = 'feed';
+            performFeedPhase();
+            return; 
+        }
+
+        gameState.currentTurnIndex = nextIndex;
+        gameState.log.unshift(`⏳ Ход перешел к игроку ${gameState.players[nextIndex].substring(0,4)}`);
+        broadcastState();
+    });
+});
+
+function getCurrentPlayerId() {
+    return gameState.players[gameState.currentTurnIndex];
+}
+
+// --- ЛОГИКА ФАЗЫ КОРМЛЕНИЯ ---
+function performFeedPhase() {
+    gameState.log.unshift('--- НАЧАЛО ФАЗЫ КОРМЛЕНИЯ ---');
+    
+    // Проходим по полю с конца, чтобы безопасно удалять элементы
+    for (let i = gameState.field.length - 1; i >= 0; i--) {
+        const item = gameState.field[i];
+        
+        if (item.isDead) continue;
+
+        if (item.card.type === 'Хищник' && item.card.hunger > 0) {
+            // Ищем жертву (любое живое травоядное)
+            const preyIndex = gameState.field.findIndex(p => 
+                p.card.type === 'Травоядное' && !p.isDead
+            );
+
+            if (preyIndex !== -1) {
+                // ХИЩНИК ЕСТ!
+                gameState.field.splice(preyIndex, 1); // Удаляем жертву
+                item.card.hunger = 0; // Хищник наелся
                 
-                if (card.type === 'Хищник' && card.hunger > 0) {
-                    // Ищем жертву (любое травоядное на поле)
-                    const preyIndex = gameState.field.findIndex(c => c.type === 'Травоядное');
-                    
-                    if (preyIndex !== -1) {
-                        // ХИЩНИК ЕСТ!
-                        const prey = gameState.field.splice(preyIndex, 1)[0]; // Удаляем жертву
-                        card.hunger = 0; // Хищник наелся
-                        
-                        gameState.log.unshift(`🦁 Хищник ID:${card.id} съел Травоядное ID:${prey.id}!`);
-                        predatorsFed = true; // Кто-то поел, значит, цикл может продолжиться (на случай цепочки атак, хотя тут 1 к 1)
-                        break; // Прерываем цикл for, чтобы пересчитать индексы массива field заново
-                    } else {
-                        // Жертв нет, хищник голодает
-                        card.hunger -= 1;
-                        if (card.hunger <= 0) {
-                             // Хищник умирает от голода! Удаляем его с поля
-                             gameState.log.unshift(`💀 Хищник ID:${card.id} умер от голода!`);
-                             gameState.field.splice(i, 1);
-                        }
-                    }
+                gameState.log.unshift(`🦁 Игрок ${item.playerId.substring(0,4)}: Хищник съел жертву!`);
+                i++; // Корректируем индекс после удаления
+            } else {
+                // Жертв нет. Хищник голодает.
+                item.card.hunger -= 1;
+                if (item.card.hunger <= 0) {
+                    item.isDead = true; // Помечаем как мертвое
+                    gameState.log.unshift(`💀 Игрок ${item.playerId.substring(0,4)}: Хищник умер от голода.`);
                 }
             }
         }
+    }
 
-        io.emit('update_state', gameState);
-        console.log('Фаза кормления завершена');
+    // После кормления ждем 3 секунды и начинаем новый раунд
+    setTimeout(() => {
+        gameState.phase = 'draw';
+        gameState.currentTurnIndex = 0;
+        gameState.log.unshift('--- НОВЫЙ РАУНД НАЧАЛСЯ ---');
+        broadcastState();
+    }, 3000);
+}
+
+// --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+
+function sendStateToPlayer(playerId) {
+    const socket = io.sockets.sockets[playerId];
+    if (!socket) return;
+    
+    socket.emit('state_update', {
+        deck: gameState.deck,
+        hand: playerHands[playerId],
+        field: gameState.field,
+        log: gameState.log,
+        currentPlayer: getCurrentPlayerId(),
+        phase: gameState.phase,
+        myId: playerId,
+        playersCount: gameState.players.length
     });
+}
 
-    socket.on('disconnect', () => console.log('Игрок отключился'));
-});
+function broadcastState() {
+    io.emit('state_update_all', {
+        deck: gameState.deck,
+        hands: playerHands, // Отправляем все руки
+        field: gameState.field,
+        log: gameState.log,
+        currentPlayer: getCurrentPlayerId(),
+        phase: gameState.phase,
+        playersCount: gameState.players.length
+    });
+}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`✅ Сервер запущен на порту ${PORT}`));
