@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <title>Эволюция: Online Multiplayer</title>
+  <title>Эволюция: Online Beta</title>
   <script src="/socket.io/socket.io.js"></script>
   <style>
     body { font-family: 'Segoe UI', sans-serif; background-color: #2c3e50; color: white; margin: 0; padding: 20px; }
@@ -16,20 +16,33 @@
       height: 160px; border: 3px solid #ecf0f1; border-radius: 8px; padding: 10px; 
       overflow-x: auto; display: flex; align-items: center; flex-wrap: nowrap; 
       box-shadow: 0 4px 6px rgba(0,0,0,0.3); min-width: 100%;
+      /* ВАЖНО: скроллбар только горизонтальный */
+      scrollbar-width: thin; 
     }
 
+    /* Фиксированный размер для всех карт */
     .card {
-      width: 90px; height: 130px;
+      width: 90px;
+      height: 130px;
+      flex-shrink: 0; /* Карты НЕ будут сжиматься, если их много */
       background: linear-gradient(145deg, #3498db, #2980b9); 
-      border-radius: 12px; position: relative; cursor: pointer;
+      border-radius: 12px;
+      position: relative;
+      cursor: pointer;
       transition: transform 0.2s, box-shadow 0.2s;
-      display: flex; flex-direction: column; justify-content: space-between; align-items: center;
-      padding: 8px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.2); user-select: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px;
+      text-align: center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      user-select: none;
     }
     .card:hover { transform: translateY(-5px); box-shadow: 0 8px 16px rgba(0,0,0,0.3); z-index: 10; }
-    .card.selected { border: 3px solid white; transform: scale(1.05); }
+    .card.selected { border: 3px solid white; transform: scale(1.05); box-shadow: 0 0 15px rgba(255,255,255,0.5); }
 
-    .card-type { font-size: 10px; text-transform: uppercase; font-weight: bold; letter-spacing: 1px; margin-top: 4px; }
+    .card-type { font-size: 11px; text-transform: uppercase; font-weight: bold; letter-spacing: 1px; margin-top: 4px; }
     .card-power { font-size: 24px; font-weight: bold; margin-bottom: 4px; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
     .card-hunger { font-size: 10px; opacity: 0.8; }
 
@@ -38,6 +51,7 @@
     #btnTake { background-color: #3498db; } 
     #btnPlay { background-color: #2ecc71; }  
     #btnEndTurn { background-color: #95a5a6; } 
+    button:disabled { background-color: #7f8c8d; cursor: not-allowed; }
 
     #log { margin-top: 20px; padding: 15px; background: #000; height: 200px; overflow-y: auto; white-space: pre-wrap; border-radius: 8px; font-family: monospace; color: #2ecc71; font-size: 14px; }
     #status { margin-bottom: 10px; font-size: 18px; text-align: center; }
@@ -75,6 +89,9 @@
   const socket = io();
   let myId = null;
   let gameState = {};
+  
+  // ХРАНИМ ID ВЫБРАННОЙ КАРТЫ ЗДЕСЬ (вместо CSS класса)
+  let selectedCardId = null; 
 
   const elDeck = document.getElementById('deck');
   const elHand = document.getElementById('hand');
@@ -95,27 +112,25 @@
       elDeck.innerHTML = '';
       state.deck.forEach(card => elDeck.appendChild(createCardElement(card, false)));
 
-      // 2. Рука (только свои карты!)
+      // 2. Рука
       elHand.innerHTML = '';
       const myHand = state.hands ? state.hands[myId] : [];
       myHand.forEach(card => elHand.appendChild(createCardElement(card, true)));
 
-      // 3. Поле (все существа)
+      // 3. Поле
       elField.innerHTML = '';
       state.field.forEach(item => {
           const el = createCardElement(item.card, false);
           
-          // Визуализация владельца
           if (item.playerId === myId) {
-              el.style.border = '3px solid #2ecc71'; // Зеленая рамка - мое существо
+              el.style.border = '3px solid #2ecc71'; 
           } else {
-              el.style.opacity = '0.7'; // Чужие чуть прозрачнее
+              el.style.opacity = '0.7'; 
           }
           
-          // Обработка мертвых существ
           if (item.isDead) {
               el.style.filter = 'grayscale(1)';
-              el.style.pointerEvents = 'none'; // Нельзя кликнуть на мертвое
+              el.style.pointerEvents = 'none'; 
               el.style.cursor = 'default';
           }
 
@@ -128,8 +143,7 @@
   function createCardElement(card, isMyCard) {
       const cardEl = document.createElement('div');
       cardEl.className = 'card';
-      // ГЛАВНОЕ: Сохраняем ID в data-атрибут, чтобы кнопки знали, какую карту брать
-      cardEl.dataset.cardId = card.id; 
+      cardEl.dataset.cardId = card.id; // Сохраняем ID
       
       let bgColor = '#3498db';
       if (card.css === 'type-predator') bgColor = '#e74c3c';
@@ -146,11 +160,15 @@
         ${card.hunger !== undefined ? `<span class="card-hunger">Голод: ${card.hunger}</span>` : ''}
       `;
 
-      // Логика клика: просто выбираем карту (подсветка)
+      // Логика клика: запоминаем ID выбранной карты
       cardEl.addEventListener('click', () => {
+          // Снимаем выделение со всех
           document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+          
+          // Выделяем текущую
           cardEl.classList.add('selected');
-          log(`Выбрана карта ID: ${card.id}`);
+          selectedCardId = parseInt(cardEl.dataset.cardId); // ЗАПОМИНАЕМ ID
+          log(`Выбрана карта ID: ${selectedCardId}`);
       });
 
       return cardEl;
@@ -207,27 +225,27 @@
   socket.on('error', (msg) => log(`❌ Ошибка сервера: ${msg}`));
 
   window.handleTakeCard = () => {
-      const selected = document.querySelector('#deck .card.selected');
-      if (!selected) {
-          log("⚠️ Выберите карту из колоды!");
+      // Используем переменную selectedCardId вместо поиска по DOM
+      if (!selectedCardId) {
+          log("⚠️ Сначала выберите карту из колоды (кликните по ней)!");
           return;
       }
-      const cardId = parseInt(selected.dataset.cardId);
-      socket.emit('take_card', cardId);
+      socket.emit('take_card', selectedCardId);
+      log(`Отправлен запрос: взять карту ${selectedCardId}`);
   };
 
   window.handlePlayCard = () => {
-      const selected = document.querySelector('#hand .card.selected');
-      if (!selected) {
-          log("⚠️ Выберите карту из руки!");
+      if (!selectedCardId) {
+          log("⚠️ Сначала выберите карту из руки (кликните по ней)!");
           return;
       }
-      const cardId = parseInt(selected.dataset.cardId);
-      socket.emit('play_card', cardId);
+      socket.emit('play_card', selectedCardId);
+      log(`Отправлен запрос: сыграть карту ${selectedCardId}`);
   };
 
   window.handleEndTurn = () => {
       socket.emit('end_turn');
+      log("Отправлен запрос: конец хода");
   };
 </script>
 </body>
