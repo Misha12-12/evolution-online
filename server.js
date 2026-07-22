@@ -1,187 +1,219 @@
-const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
+<script>
+  const socket = io();
+  let myId = null;
+  let gameState = {};
+  let selectedCardId = null; 
+  let draggedCard = null; // Для Drag & Drop
 
-const app = express();
-const server = http.createServer(app);
-const io = socketIo(server);
+  const elDeck = document.getElementById('deck');
+  const elHand = document.getElementById('hand');
+  const elField = document.getElementById('field');
+  const elLog = document.getElementById('log');
+  const elStatus = document.getElementById('status');
+  const elFood = document.getElementById('food-count');
+  const elSpecies = document.getElementById('species-count');
 
-app.use(express.static(__dirname));
+  function log(msg) {
+      elLog.innerText = `[${new Date().toLocaleTimeString()}] ${msg}\n` + elLog.innerText;
+  }
 
-// --- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ---
-let gameState = {
-    deck: [],
-    field: [], // { playerId, card, isDead }
-    log: ['Сервер запущен...'],
-    players: [], // Массив socket.id
-    currentTurnIndex: 0,
-    phase: 'draw' // draw, play, feed
-};
+  // --- ОТРИСОВКА ---
+  function render(state) {
+      gameState = state;
+      myId = state.myId;
 
-// Руки игроков: { 'socket.id': [cards...] }
-const playerHands = {}; 
+      // 1. Колода
+      elDeck.innerHTML = '';
+      state.deck.forEach(card => elDeck.appendChild(createCardElement(card, false, 'deck')));
 
-// Инициализация колоды
-function initDeck() {
-    const CARD_TYPES = [
-        { type: 'Травоядное', power: 2, css: 'type-herbivore', hunger: 0 },
-        { type: 'Хищник', power: 4, css: 'type-predator', hunger: 1 }
-    ];
-    gameState.deck = [];
-    for(let i = 0; i < 40; i++) {
-        const t = CARD_TYPES[Math.floor(Math.random() * CARD_TYPES.length)];
-        gameState.deck.push({ id: i + 1000, ...t });
-    }
-    gameState.deck.sort(() => Math.random() - 0.5);
-}
-initDeck();
+      // 2. Рука
+      elHand.innerHTML = '';
+      const myHand = state.hand || []; 
+      myHand.forEach(card => {
+          const el = createCardElement(card, true, 'hand');
+          el.addEventListener('dragstart', (e) => dragStart(e, card));
+          el.addEventListener('click', () => selectCard(el, card.id));
+          elHand.appendChild(el);
+      });
 
-io.on('connection', (socket) => {
-    console.log('👤 Игрок подключился:', socket.id);
-    
-    // 1. Создаем руку для нового игрока
-    playerHands[socket.id] = [];
-    gameState.players.push(socket.id);
+      // 3. Поле
+      elField.innerHTML = '';
+      state.field.forEach(item => {
+          const el = createCardElement(item.card, false, 'field');
+          
+          if (item.playerId === myId) {
+              el.style.border = '2px solid var(--accent)'; 
+          } else {
+              el.style.opacity = '0.6'; 
+          }
+          
+          if (item.isDead) {
+              el.style.filter = 'grayscale(1)';
+              el.style.pointerEvents = 'none'; 
+              el.style.cursor = 'default';
+          }
 
-    // Отправляем состояние ТОЛЬКО этому игроку при входе
-    sendStateToPlayer(socket.id);
-    io.emit('player_joined', { playersCount: gameState.players.length });
+          elField.appendChild(el);
+      });
 
-    socket.on('disconnect', () => {
-        console.log('🚪 Игрок ушел:', socket.id);
-        gameState.players = gameState.players.filter(id => id !== socket.id);
-        delete playerHands[socket.id];
-        io.emit('player_left', { playersCount: gameState.players.length });
-    });
+      updateStats(state);
+      updateUI(state);
+  }
 
-    // --- ДЕЙСТВИЯ ---
+  function createCardElement(card, isMyCard, zone) {
+      const cardEl = document.createElement('div');
+      cardEl.className = 'card';
+      cardEl.dataset.cardId = card.id; 
+      cardEl.draggable = (zone === 'hand') ? true : false; 
+      
+      let bgColor = '#fff';
+      let typeClass = '';
+      if (card.css === 'type-predator') { bgColor = '#ffe6e6'; typeClass = 'pred-label'; }
+      else if (card.css === 'type-herbivore') { bgColor = '#e6ffe6'; typeClass = 'herb-label'; }
+      
+      cardEl.style.background = bgColor;
 
-    // Взять карту
-    socket.on('take_card', (cardId) => {
-        if (gameState.phase !== 'draw') return;
-        if (socket.id !== getCurrentPlayerId()) return;
+      const hungerPercent = (card.hunger / 3) * 100; 
 
-        const idx = gameState.deck.findIndex(c => c.id === cardId);
-        if (idx !== -1) {
-            const card = gameState.deck.splice(idx, 1)[0];
-            playerHands[socket.id].push(card);
-            
-            gameState.log.unshift(`🖐 Игрок ${socket.id.substring(0,4)} взял карту: ${card.type}`);
-            broadcastState(); // Рассылаем всем обновленное состояние
-        } else {
-            socket.emit('error', 'Карта не найдена в колоде');
-        }
-    });
+      cardEl.innerHTML = `
+        <div class="power-badge">${card.power}</div>
+        <div style="flex-grow:1; display:flex; align-items:center; justify-content:center;">
+           <span class="type-label ${typeClass}">${card.type}</span>
+        </div>
+        ${card.hunger !== undefined ? `
+          <div class="hunger-bar"><div class="hunger-fill" style="width: ${100 - hungerPercent}%"></div></div>
+          <span style="font-size:10px; color:#666;">Голод: ${card.hunger}</span>
+        ` : ''}
+      `;
 
-    // Сыграть карту
-    socket.on('play_card', (cardId) => {
-        if (gameState.phase !== 'play') return;
-        if (socket.id !== getCurrentPlayerId()) return;
+      return cardEl;
+  }
 
-        const hand = playerHands[socket.id];
-        const idx = hand.findIndex(c => c.id === cardId);
-        
-        if (idx !== -1) {
-            const card = hand.splice(idx, 1)[0]; // Удаляем из руки
-            
-            // Кладем на поле
-            gameState.field.push({ playerId: socket.id, card: card, isDead: false });
-            
-            gameState.log.unshift(`🎮 Игрок ${socket.id.substring(0,4)} выложил: ${card.type}`);
-            broadcastState();
-        } else {
-            socket.emit('error', 'Карты нет в вашей руке');
-        }
-    });
+  function updateStats(state) {
+      const field = state.field || [];
+      const mySpecies = field.filter(f => f.playerId === myId && !f.isDead).length;
+      elSpecies.innerText = mySpecies;
+      elFood.innerText = 0; 
+  }
 
-    // Конец хода
-    socket.on('end_turn', () => {
-        if (socket.id !== getCurrentPlayerId()) return;
+  // --- DRAG & DROP ---
+  function dragStart(event, card) {
+      draggedCard = card;
+      event.dataTransfer.setData('text', card.id);
+      log(`Начинаем тащить карту ID: ${card.id}`);
+  }
 
-        let nextIndex = gameState.currentTurnIndex + 1;
-        
-        // Если круг замкнулся -> Фаза кормления
-        if (nextIndex >= gameState.players.length) {
-            nextIndex = 0;
-            gameState.phase = 'feed';
-            performFeedPhase();
-            return; 
-        }
+  function allowDrop(event) {
+      event.preventDefault();
+  }
 
-        gameState.currentTurnIndex = nextIndex;
-        gameState.log.unshift(`⏳ Ход перешел к игроку ${gameState.players[nextIndex].substring(0,4)}`);
-        broadcastState();
-    });
-});
+  function handleDrop(event) {
+      if (!draggedCard) return;
+      
+      const cardId = parseInt(event.dataTransfer.getData('text'));
+      
+      if (gameState.phase === 'play' && gameState.currentPlayer === myId) {
+          socket.emit('play_card', cardId);
+          log(`Карта ${cardId} отправлена на сервер!`);
+          draggedCard = null;
+      } else {
+          log('Нельзя сыграть карту сейчас (не ваш ход или неправильная фаза)');
+      }
+  }
 
-function getCurrentPlayerId() {
-    return gameState.players[gameState.currentTurnIndex];
-}
+  function selectCard(element, id) {
+      document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+      element.classList.add('selected');
+      selectedCardId = id;
+  }
 
-function performFeedPhase() {
-    gameState.log.unshift('--- НАЧАЛО ФАЗЫ КОРМЛЕНИЯ ---');
-    
-    // Проходим с конца, чтобы безопасно удалять
-    for (let i = gameState.field.length - 1; i >= 0; i--) {
-        const item = gameState.field[i];
-        if (item.isDead) continue;
+  // --- КНОПКИ ---
+  window.handleTakeCard = () => {
+      if (!selectedCardId) {
+          log("⚠️ Сначала выберите карту из колоды!");
+          return;
+      }
+      socket.emit('take_card', selectedCardId);
+      resetSelection();
+  };
 
-        if (item.card.type === 'Хищник' && item.card.hunger > 0) {
-            // Ищем жертву (любое живое травоядное)
-            const preyIndex = gameState.field.findIndex(p => 
-                p.card.type === 'Травоядное' && !p.isDead
-            );
+  window.handlePlayCard = () => {
+      if (!selectedCardId) {
+          log("⚠️ Сначала выберите карту из руки!");
+          return;
+      }
+      socket.emit('play_card', selectedCardId);
+      resetSelection();
+  };
 
-            if (preyIndex !== -1) {
-                // ХИЩНИК ЕСТ!
-                gameState.field.splice(preyIndex, 1); // Удаляем жертву
-                item.card.hunger = 0; // Хищник наелся
-                gameState.log.unshift(`🦁 Хищник съел жертву!`);
-                i++; // Корректируем индекс
-            } else {
-                // Жертв нет. Хищник голодает.
-                item.card.hunger -= 1;
-                if (item.card.hunger <= 0) {
-                    item.isDead = true;
-                    gameState.log.unshift(`💀 Хищник умер от голода.`);
-                }
-            }
-        }
-    }
+  window.handleEndTurn = () => {
+      socket.emit('end_turn');
+      log("Конец хода отправлен");
+  };
 
-    // Ждем 3 секунды и новый раунд
-    setTimeout(() => {
-        gameState.phase = 'draw';
-        gameState.currentTurnIndex = 0;
-        gameState.log.unshift('--- НОВЫЙ РАУНД НАЧАЛСЯ ---');
-        broadcastState();
-    }, 3000);
-}
+  function resetSelection() {
+      selectedCardId = null;
+      document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+  }
 
-// --- ОТПРАВКА ДАННЫХ ---
+  // --- ПОЛНАЯ ФУНКЦИЯ UI (Твое продолжение) ---
+  function updateUI(state) {
+      const isMyTurn = (state.currentPlayer === myId);
+      
+      if (state.phase === 'draw') {
+          if (isMyTurn) {
+              elStatus.innerText = "✅ ВАШ ХОД: Возьмите карту из колоды!";
+              elStatus.style.color = "#2ecc71";
+          } else {
+              elStatus.innerText = `⏳ Ожидание: Игрок ${state.currentPlayer?.substring(0,4) || '...'} берет карту...`;
+              elStatus.style.color = "#f39c12";
+          }
+      } 
+      else if (state.phase === 'play') {
+          if (isMyTurn) {
+              elStatus.innerText = "✅ ВАШ ХОД: Сыграйте карту (перетащите на поле)!";
+              elStatus.style.color = "#2ecc71";
+          } else {
+              elStatus.innerText = `⏳ Ожидание: Игрок ${state.currentPlayer?.substring(0,4) || '...'} разыгрывает карту...`;
+              elStatus.style.color = "#f39c12";
+          }
+      } 
+      else if (state.phase === 'feed') {
+          elStatus.innerText = "🍖 ФАЗА КОРМЛЕНИЯ: Автоматическое распределение еды...";
+          elStatus.style.color = "#e74c3c";
+      }
+      else if (state.phase === 'end') {
+          elStatus.innerText = "🏆 РАУНД ЗАВЕРШЕН! Подсчет очков...";
+          elStatus.style.color = "#d35400";
+      }
 
-function sendStateToPlayer(playerId) {
-    const socket = io.sockets.sockets[playerId];
-    if (!socket) return;
-    
-    socket.emit('state_update', {
-        deck: gameState.deck,
-        hand: playerHands[playerId], // Отправляем ТОЛЬКО его руку
-        field: gameState.field,
-        log: gameState.log,
-        currentPlayer: getCurrentPlayerId(),
-        phase: gameState.phase,
-        myId: playerId,
-        playersCount: gameState.players.length
-    });
-}
+      const btnTake = document.getElementById('btnTake');
+      const btnPlay = document.getElementById('btnPlay');
+      const btnEnd = document.getElementById('btnEndTurn');
 
-function broadcastState() {
-    // Для каждого игрока формируем свое состояние (свою руку)
-    Object.keys(playerHands).forEach(pid => {
-        sendStateToPlayer(pid);
-    });
-}
+      if (state.phase === 'draw') {
+          btnTake.disabled = !isMyTurn;
+          btnPlay.disabled = true;
+          btnEnd.disabled = true;
+      } 
+      else if (state.phase === 'play') {
+          btnTake.disabled = true;
+          btnPlay.disabled = true; // Используем Drag & Drop вместо кнопки
+          btnEnd.disabled = true;
+      } 
+      else {
+          // feed и end
+          btnTake.disabled = true;
+          btnPlay.disabled = true;
+          btnEnd.disabled = true;
+      }
+  }
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`✅ Сервер запущен на порту ${PORT}`));
+  // --- СОКЕТЫ ---
+  socket.on('connect', () => log("✅ Подключено к серверу"));
+  socket.on('disconnect', () => log("❌ Потеряно соединение"));
+  
+  socket.on('state_update', (state) => render(state));
+  socket.on('player_joined', (data) => log(`👥 В игре теперь ${data.playersCount} игроков`));
+  socket.on('error', (msg) => log(`❌ Ошибка сервера: ${msg}`));
+</script>
