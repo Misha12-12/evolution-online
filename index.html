@@ -131,12 +131,16 @@
   <div id="log">Лог событий...</div>
 
 <script>
-  const socket = io();
+  // 1. ИСПРАВЛЕННОЕ ПОДКЛЮЧЕНИЕ (Самое важное!)
+  // Мы берем адрес текущей страницы автоматически, но указываем правильный путь для Socket.IO
+  const socket = io({ path: '/socket.io' });
+
   let myId = null;
   let gameState = {};
   let selectedCardId = null; 
-  let draggedCard = null; // Для Drag & Drop
+  let draggedCard = null;
 
+  // Получаем элементы DOM
   const elDeck = document.getElementById('deck');
   const elHand = document.getElementById('hand');
   const elField = document.getElementById('field');
@@ -148,6 +152,43 @@
   function log(msg) {
       elLog.innerText = `[${new Date().toLocaleTimeString()}] ${msg}\n` + elLog.innerText;
   }
+
+  // --- ГЛАВНЫЙ ОБРАБОТЧИК СОБЫТИЙ (То, чего не хватало!) ---
+  
+  // Когда сервер отправляет состояние игры
+  socket.on('state_update', (data) => {
+      console.log('✅ Получено состояние от сервера:', data);
+      render(data);
+      
+      // Сразу меняем статус на "Подключено", если он еще висит
+      if (elStatus.innerText.includes('Подключение')) {
+          elStatus.innerText = "✅ Подключено к серверу";
+          elStatus.style.color = "#2ecc71";
+      }
+  });
+
+  // Когда заходит новый игрок (для теста)
+  socket.on('player_joined', (data) => {
+      log(`👤 Игрок зашел! Всего игроков: ${data.playersCount}`);
+      // Тут можно добавить всплывающее окно или обновить счетчик, если нужно
+  });
+
+  // Когда игрок выходит
+  socket.on('player_left', (data) => {
+      log(`🚪 Игрок вышел. Осталось: ${data.playersCount}`);
+  });
+
+  // Обработка ошибок соединения
+  socket.on('connect_error', (err) => {
+      console.error('❌ Ошибка подключения:', err);
+      elStatus.innerText = "❌ Ошибка соединения с сервером";
+      elStatus.style.color = "red";
+  });
+
+  socket.on('disconnect', () => {
+      elStatus.innerText = "🔴 Сервер отключился";
+      elStatus.style.color = "red";
+  });
 
   // --- ОТРИСОВКА ---
   function render(state) {
@@ -182,9 +223,6 @@
               el.style.filter = 'grayscale(1)';
               el.style.pointerEvents = 'none'; 
           }
-
-          // Добавляем возможность перетаскивать свои карты обратно в руку? Нет, по правилам нельзя.
-          // Но можно добавить логику, если нужно. Пока просто статично.
           
           elField.appendChild(el);
       });
@@ -206,7 +244,8 @@
       
       cardEl.style.background = bgColor;
 
-      const hungerPercent = (card.hunger / 3) * 100; // Макс голод 3 для примера
+      // Защита от деления на ноль или undefined
+      const hungerPercent = (card.hunger !== undefined && card.hunger > 0) ? (card.hunger / 3) * 100 : 0;
 
       cardEl.innerHTML = `
         <div class="power-badge">${card.power}</div>
@@ -219,7 +258,6 @@
         ` : ''}
       `;
 
-      // Логика клика (для выбора, если не используем Drag)
       cardEl.addEventListener('click', () => {
           document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
           cardEl.classList.add('selected');
@@ -231,19 +269,15 @@
   }
 
   function updateStats(state) {
-      // Простая эвристика для отображения статистики
       const field = state.field || [];
       const mySpecies = field.filter(f => f.playerId === myId && !f.isDead).length;
       elSpecies.innerText = mySpecies;
-      
-      // Еду считаем сложнее, пока оставим 0 или можно передавать с сервера
       elFood.innerText = 0; 
   }
 
-    function updateUI(state) {
+  function updateUI(state) {
       const isMyTurn = (state.currentPlayer === myId);
       
-      // 1. Обновляем текст статуса в зависимости от фазы и хода
       if (state.phase === 'draw') {
           if (isMyTurn) {
               elStatus.innerText = "✅ ВАШ ХОД: Возьмите карту из колоды!";
@@ -271,29 +305,71 @@
           elStatus.style.color = "#d35400";
       }
 
-      // 2. Блокируем/разблокируем кнопки в зависимости от фазы
       const btnTake = document.getElementById('btnTake');
-      const btnPlay = document.getElementById('btnPlay'); // Эта кнопка скрыта в HTML, но логика нужна
+      const btnPlay = document.getElementById('btnPlay');
       const btnEnd = document.getElementById('btnEndTurn');
 
-      // Фаза взятия карты
       if (state.phase === 'draw') {
-          btnTake.disabled = !isMyTurn; // Можно брать только в свой ход
-          btnPlay.disabled = true;       // Играть нельзя
-          btnEnd.disabled = true;        // Конец хода нельзя нажать
+          btnTake.disabled = !isMyTurn;
+          btnPlay.disabled = true;
+          btnEnd.disabled = true;
       } 
-      // Фаза розыгрыша карт
       else if (state.phase === 'play') {
-          btnTake.disabled = true;       // Брать нельзя
-          // Кнопку Play оставляем disabled, так как играем через Drag & Drop, 
-          // но если хочешь оставить клик — поставь: btnPlay.disabled = !isMyTurn;
+          btnTake.disabled = true;
           btnPlay.disabled = true; 
-          btnEnd.disabled = true;        // Нельзя закончить, пока не сыграешь (или по правилам сервера)
+          btnEnd.disabled = true;
       } 
-      // Фаза кормления
       else if (state.phase === 'feed' || state.phase === 'end') {
           btnTake.disabled = true;
           btnPlay.disabled = true;
           btnEnd.disabled = true;
       }
   }
+
+  // --- ЛОГИКА ДЕЙСТВИЙ (Кнопки и Drag & Drop) ---
+
+  function handleTakeCard() {
+      if (!myId) return;
+      // Берем первую карту из колоды (или любую, логика на сервере строже)
+      const firstCard = document.querySelector('#deck .card');
+      if (firstCard) {
+          const cardId = parseInt(firstCard.dataset.cardId);
+          socket.emit('take_card', cardId);
+          log("Запрос: Взять карту");
+      } else {
+          alert("Колода пуста!");
+      }
+  }
+
+  function handlePlayCard() {
+      // Эта кнопка сейчас скрыта в HTML, но логика нужна если вернешь её
+      if (selectedCardId) {
+          socket.emit('play_card', selectedCardId);
+          log("Запрос: Сыграть карту");
+      }
+  }
+
+  function handleEndTurn() {
+      socket.emit('end_turn');
+      log("Запрос: Конец хода");
+  }
+
+  // Drag & Drop логика (упрощенная)
+  function dragStart(e, card) {
+      draggedCard = card;
+      e.dataTransfer.setData('text/plain', card.id);
+  }
+
+  function allowDrop(e) {
+      e.preventDefault();
+  }
+
+  function handleDrop(e) {
+      e.preventDefault();
+      if (draggedCard) {
+          // Если перетащили на поле -> играем карту
+          socket.emit('play_card', draggedCard.id);
+          draggedCard = null;
+      }
+  }
+</script>
