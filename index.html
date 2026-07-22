@@ -139,8 +139,13 @@
   const elStatus = document.getElementById('status');
 
   function log(msg) {
-      elLog.innerText = `[${new Date().toLocaleTimeString()}] ${msg}\n` + elLog.innerText;
-  }
+    // Добавляем класс или просто эмодзи для разных типов событий
+    let coloredMsg = msg;
+    if (msg.includes('съел')) coloredMsg = '🍖 ' + msg;
+    if (msg.includes('умер')) coloredMsg = '☠️ ' + msg;
+    
+    elLog.innerText = `[${new Date().toLocaleTimeString()}] ${coloredMsg}\n` + elLog.innerText;
+}
 
   // --- ГЛАВНАЯ ФУНКЦИЯ: Создает красивую карточку из данных ---
   function createCardElement(card) {
