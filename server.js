@@ -6,20 +6,19 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
 
-// Раздаем статические файлы (наш index.html)
 app.use(express.static(__dirname));
 
-// --- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ИГРЫ ---
+// --- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ---
 let gameState = {
     deck: [],
-    field: [], // Массив: { playerId, card, isDead }
+    field: [], // { playerId, card, isDead }
     log: ['Сервер запущен...'],
-    players: [], // Список socket.id игроков
+    players: [], // Массив socket.id
     currentTurnIndex: 0,
-    phase: 'draw' // 'draw' (брать), 'play' (разыгрывать), 'feed' (кормить)
+    phase: 'draw' // draw, play, feed
 };
 
-// Хранилище рук: { 'socket.id': [cards...] }
+// Руки игроков: { 'socket.id': [cards...] }
 const playerHands = {}; 
 
 // Инициализация колоды
@@ -29,15 +28,10 @@ function initDeck() {
         { type: 'Хищник', power: 4, css: 'type-predator', hunger: 1 }
     ];
     gameState.deck = [];
-    // Создаем 40 карт для долгой игры
     for(let i = 0; i < 40; i++) {
         const t = CARD_TYPES[Math.floor(Math.random() * CARD_TYPES.length)];
-        gameState.deck.push({ 
-            id: i + 1000, 
-            ...t 
-        });
+        gameState.deck.push({ id: i + 1000, ...t });
     }
-    // Перемешиваем
     gameState.deck.sort(() => Math.random() - 0.5);
 }
 initDeck();
@@ -45,11 +39,11 @@ initDeck();
 io.on('connection', (socket) => {
     console.log('👤 Игрок подключился:', socket.id);
     
-    // 1. Инициализируем руку для нового игрока
+    // 1. Создаем руку для нового игрока
     playerHands[socket.id] = [];
     gameState.players.push(socket.id);
 
-    // Отправляем начальное состояние только этому игроку
+    // Отправляем состояние ТОЛЬКО этому игроку при входе
     sendStateToPlayer(socket.id);
     io.emit('player_joined', { playersCount: gameState.players.length });
 
@@ -60,12 +54,12 @@ io.on('connection', (socket) => {
         io.emit('player_left', { playersCount: gameState.players.length });
     });
 
-    // --- ДЕЙСТВИЯ ИГРОКА ---
+    // --- ДЕЙСТВИЯ ---
 
     // Взять карту
     socket.on('take_card', (cardId) => {
         if (gameState.phase !== 'draw') return;
-        if (socket.id !== getCurrentPlayerId()) return; // Только чей ход
+        if (socket.id !== getCurrentPlayerId()) return;
 
         const idx = gameState.deck.findIndex(c => c.id === cardId);
         if (idx !== -1) {
@@ -73,7 +67,7 @@ io.on('connection', (socket) => {
             playerHands[socket.id].push(card);
             
             gameState.log.unshift(`🖐 Игрок ${socket.id.substring(0,4)} взял карту: ${card.type}`);
-            broadcastState();
+            broadcastState(); // Рассылаем всем обновленное состояние
         } else {
             socket.emit('error', 'Карта не найдена в колоде');
         }
@@ -84,11 +78,13 @@ io.on('connection', (socket) => {
         if (gameState.phase !== 'play') return;
         if (socket.id !== getCurrentPlayerId()) return;
 
-        const handIdx = playerHands[socket.id].findIndex(c => c.id === cardId);
-        if (handIdx !== -1) {
-            const card = playerHands[socket.id].splice(handIdx, 1)[0];
+        const hand = playerHands[socket.id];
+        const idx = hand.findIndex(c => c.id === cardId);
+        
+        if (idx !== -1) {
+            const card = hand.splice(idx, 1)[0]; // Удаляем из руки
             
-            // Кладем на поле, помечая владельца
+            // Кладем на поле
             gameState.field.push({ playerId: socket.id, card: card, isDead: false });
             
             gameState.log.unshift(`🎮 Игрок ${socket.id.substring(0,4)} выложил: ${card.type}`);
@@ -122,14 +118,12 @@ function getCurrentPlayerId() {
     return gameState.players[gameState.currentTurnIndex];
 }
 
-// --- ЛОГИКА ФАЗЫ КОРМЛЕНИЯ ---
 function performFeedPhase() {
     gameState.log.unshift('--- НАЧАЛО ФАЗЫ КОРМЛЕНИЯ ---');
     
-    // Проходим по полю с конца, чтобы безопасно удалять элементы
+    // Проходим с конца, чтобы безопасно удалять
     for (let i = gameState.field.length - 1; i >= 0; i--) {
         const item = gameState.field[i];
-        
         if (item.isDead) continue;
 
         if (item.card.type === 'Хищник' && item.card.hunger > 0) {
@@ -142,21 +136,20 @@ function performFeedPhase() {
                 // ХИЩНИК ЕСТ!
                 gameState.field.splice(preyIndex, 1); // Удаляем жертву
                 item.card.hunger = 0; // Хищник наелся
-                
-                gameState.log.unshift(`🦁 Игрок ${item.playerId.substring(0,4)}: Хищник съел жертву!`);
-                i++; // Корректируем индекс после удаления
+                gameState.log.unshift(`🦁 Хищник съел жертву!`);
+                i++; // Корректируем индекс
             } else {
                 // Жертв нет. Хищник голодает.
                 item.card.hunger -= 1;
                 if (item.card.hunger <= 0) {
-                    item.isDead = true; // Помечаем как мертвое
-                    gameState.log.unshift(`💀 Игрок ${item.playerId.substring(0,4)}: Хищник умер от голода.`);
+                    item.isDead = true;
+                    gameState.log.unshift(`💀 Хищник умер от голода.`);
                 }
             }
         }
     }
 
-    // После кормления ждем 3 секунды и начинаем новый раунд
+    // Ждем 3 секунды и новый раунд
     setTimeout(() => {
         gameState.phase = 'draw';
         gameState.currentTurnIndex = 0;
@@ -165,7 +158,7 @@ function performFeedPhase() {
     }, 3000);
 }
 
-// --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+// --- ОТПРАВКА ДАННЫХ ---
 
 function sendStateToPlayer(playerId) {
     const socket = io.sockets.sockets[playerId];
@@ -173,7 +166,7 @@ function sendStateToPlayer(playerId) {
     
     socket.emit('state_update', {
         deck: gameState.deck,
-        hand: playerHands[playerId],
+        hand: playerHands[playerId], // Отправляем ТОЛЬКО его руку
         field: gameState.field,
         log: gameState.log,
         currentPlayer: getCurrentPlayerId(),
@@ -184,14 +177,9 @@ function sendStateToPlayer(playerId) {
 }
 
 function broadcastState() {
-    io.emit('state_update_all', {
-        deck: gameState.deck,
-        hands: playerHands, // Отправляем все руки
-        field: gameState.field,
-        log: gameState.log,
-        currentPlayer: getCurrentPlayerId(),
-        phase: gameState.phase,
-        playersCount: gameState.players.length
+    // Для каждого игрока формируем свое состояние (свою руку)
+    Object.keys(playerHands).forEach(pid => {
+        sendStateToPlayer(pid);
     });
 }
 
