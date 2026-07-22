@@ -16,15 +16,14 @@
       height: 160px; border: 3px solid #ecf0f1; border-radius: 8px; padding: 10px; 
       overflow-x: auto; display: flex; align-items: center; flex-wrap: nowrap; 
       box-shadow: 0 4px 6px rgba(0,0,0,0.3); min-width: 100%;
-      /* ВАЖНО: скроллбар только горизонтальный */
       scrollbar-width: thin; 
     }
 
-    /* Фиксированный размер для всех карт */
+    /* Фиксированный размер для ВСЕХ карт */
     .card {
       width: 90px;
       height: 130px;
-      flex-shrink: 0; /* Карты НЕ будут сжиматься, если их много */
+      flex-shrink: 0; /* Карты НЕ сжимаются */
       background: linear-gradient(145deg, #3498db, #2980b9); 
       border-radius: 12px;
       position: relative;
@@ -59,7 +58,7 @@
 </head>
 <body>
 
-  <h1>🦎 Эволюция: Онлайн версия (Multiplayer)</h1>
+  <h1>🦎 Эволюция: Online Beta</h1>
   <p id="status">Статус: Подключение к серверу...</p>
 
   <div class="game-area">
@@ -90,7 +89,7 @@
   let myId = null;
   let gameState = {};
   
-  // ХРАНИМ ID ВЫБРАННОЙ КАРТЫ ЗДЕСЬ (вместо CSS класса)
+  // ВАЖНО: Храним ID выбранной карты здесь
   let selectedCardId = null; 
 
   const elDeck = document.getElementById('deck');
@@ -112,9 +111,9 @@
       elDeck.innerHTML = '';
       state.deck.forEach(card => elDeck.appendChild(createCardElement(card, false)));
 
-      // 2. Рука
+      // 2. Рука (только свои карты!)
       elHand.innerHTML = '';
-      const myHand = state.hands ? state.hands[myId] : [];
+      const myHand = state.hand || []; 
       myHand.forEach(card => elHand.appendChild(createCardElement(card, true)));
 
       // 3. Поле
@@ -143,12 +142,23 @@
   function createCardElement(card, isMyCard) {
       const cardEl = document.createElement('div');
       cardEl.className = 'card';
-      cardEl.dataset.cardId = card.id; // Сохраняем ID
+      cardEl.dataset.cardId = card.id; 
       
       let bgColor = '#3498db';
       if (card.css === 'type-predator') bgColor = '#e74c3c';
       else if (card.css === 'type-herbivore') bgColor = '#2ecc71';
       else bgColor = '#9b59b6';
+
+      // Функция затемнения цвета для градиента
+      function darkenColor(hex) {
+          let color = hex.replace('#', '');
+          if (color.length === 3) color = color.split('').map(c => c + c).join('');
+          const num = parseInt(color, 16);
+          const r = Math.max(0, (num >> 16) - 50);
+          const g = Math.max(0, ((num >> 8) & 0x00FF) - 50);
+          const b = Math.max(0, (num & 0x00FF) - 50);
+          return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+      }
 
       cardEl.style.background = `linear-gradient(145deg, ${bgColor}, ${darkenColor(bgColor)})`;
 
@@ -167,21 +177,11 @@
           
           // Выделяем текущую
           cardEl.classList.add('selected');
-          selectedCardId = parseInt(cardEl.dataset.cardId); // ЗАПОМИНАЕМ ID
+          selectedCardId = parseInt(cardEl.dataset.cardId); 
           log(`Выбрана карта ID: ${selectedCardId}`);
       });
 
       return cardEl;
-  }
-
-  function darkenColor(hex) {
-      let color = hex.replace('#', '');
-      if (color.length === 3) color = color.split('').map(c => c + c).join('');
-      const num = parseInt(color, 16);
-      const r = Math.max(0, (num >> 16) - 50);
-      const g = Math.max(0, ((num >> 8) & 0x00FF) - 50);
-      const b = Math.max(0, (num & 0x00FF) - 50);
-      return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
   }
 
   function updateUI(state) {
@@ -220,18 +220,19 @@
   socket.on('disconnect', () => log("❌ Потеряно соединение"));
   
   socket.on('state_update', (state) => render(state));
-  socket.on('state_update_all', (state) => render(state));
   socket.on('player_joined', (data) => log(`👥 В игре теперь ${data.playersCount} игроков`));
   socket.on('error', (msg) => log(`❌ Ошибка сервера: ${msg}`));
 
   window.handleTakeCard = () => {
-      // Используем переменную selectedCardId вместо поиска по DOM
       if (!selectedCardId) {
           log("⚠️ Сначала выберите карту из колоды (кликните по ней)!");
           return;
       }
       socket.emit('take_card', selectedCardId);
       log(`Отправлен запрос: взять карту ${selectedCardId}`);
+      // СБРОС ВЫБОРА ПОСЛЕ ДЕЙСТВИЯ
+      selectedCardId = null;
+      document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
   };
 
   window.handlePlayCard = () => {
@@ -241,11 +242,15 @@
       }
       socket.emit('play_card', selectedCardId);
       log(`Отправлен запрос: сыграть карту ${selectedCardId}`);
+      // СБРОС ВЫБОРА ПОСЛЕ ДЕЙСТВИЯ
+      selectedCardId = null;
+      document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
   };
 
   window.handleEndTurn = () => {
       socket.emit('end_turn');
       log("Отправлен запрос: конец хода");
+      // Сброс не нужен, так как ход переходит другому игроку
   };
 </script>
 </body>
