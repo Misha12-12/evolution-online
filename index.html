@@ -2,7 +2,10 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <title>Эволюция: Полная версия</title>
+  <title>Эволюция: Мультиплеер</title>
+  <!-- Подключаем Socket.IO -->
+  <script src="/socket.io/socket.io.js"></script>
+  
   <style>
     body {
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -11,16 +14,28 @@
       margin: 0;
       padding: 20px;
       user-select: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
 
     h1 { text-align: center; margin-bottom: 10px; }
     
+    /* Контейнер: Игра слева, Список игроков справа */
+    .main-container {
+      display: flex;
+      width: 100%;
+      max-width: 1400px;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
     .game-area {
+      flex: 3; /* Занимает 75% ширины */
       display: flex;
       flex-direction: column;
       gap: 20px;
-      max-width: 1200px;
-      margin: 0 auto;
     }
 
     .zone-title { font-weight: bold; color: #f1c40f; margin-bottom: 5px; font-size: 18px; }
@@ -110,38 +125,93 @@
       font-family: monospace;
       color: #2ecc71;
       border: 1px solid #555;
+      width: 100%;
     }
+
+    /* --- НОВАЯ ПАНЕЛЬ ИГРОКОВ --- */
+    .players-panel {
+      flex: 1; /* Занимает 25% ширины */
+      min-width: 250px;
+      background: #34495e;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    .panel-header {
+      border-bottom: 2px solid #f1c40f;
+      padding-bottom: 10px;
+      font-weight: bold;
+      font-size: 18px;
+      color: #f1c40f;
+    }
+    .player-item {
+      background: rgba(255,255,255,0.1);
+      padding: 10px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .player-status {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 2px solid white;
+    }
+    .status-online { background-color: #2ecc71; }
+    .status-offline { background-color: #95a5a6; }
   </style>
 </head>
 <body>
 
-  <h1>🦎 Эволюция: JS Edition (Одиночная)</h1>
+  <h1>🦎 Эволюция: Онлайн Версия</h1>
 
-  <div class="game-area">
-    <div>
-      <div class="zone-title">Колода (нажмите, чтобы взять карту)</div>
-      <div id="deck" class="zone"></div>
+  <div class="main-container">
+    <!-- ЛЕВАЯ ЧАСТЬ: ИГРА -->
+    <div class="game-area">
+      <div>
+        <div class="zone-title">Колода (нажмите, чтобы взять карту)</div>
+        <div id="deck" class="zone"></div>
+      </div>
+
+      <div>
+        <div class="zone-title">Ваша рука</div>
+        <div id="hand" class="zone"></div>
+      </div>
+
+      <div>
+        <div class="zone-title">Игровое поле (эволюция)</div>
+        <div id="field" class="zone"></div>
+      </div>
     </div>
 
-    <div>
-      <div class="zone-title">Ваша рука</div>
-      <div id="hand" class="zone"></div>
+    <div style="width: 100%;">
+      <div class="controls">
+        <button onclick="startNewGame()">🔄 Новая игра</button>
+        <button id="btnFeed" onclick="runFeedPhase()" disabled>🍖 Накормить (Фаза питания)</button>
+      </div>
+      
+      <div id="log">Лог событий...</div>
     </div>
 
-    <div>
-      <div class="zone-title">Игровое поле (эволюция)</div>
-      <div id="field" class="zone"></div>
-    </div>
+    <!-- ПРАВАЯ ЧАСТЬ: СПИСОК ИГРОКОВ -->
+    <aside class="players-panel">
+      <div class="panel-header">👥 Игроки онлайн</div>
+      <div id="players-list">
+        <!-- Сюда JS будет вставлять игроков -->
+        <div style="color: #7f8c8d;">Ожидание подключения...</div>
+      </div>
+    </aside>
   </div>
-
-  <div class="controls">
-    <button onclick="startNewGame()">🔄 Новая игра</button>
-    <button id="btnFeed" onclick="runFeedPhase()" disabled>🍖 Накормить (Фаза питания)</button>
-  </div>
-  
-  <div id="log">Лог событий...</div>
 
 <script>
+  // --- СОЕДИНЕНИЕ С СЕРВЕРОМ ---
+  const socket = io();
+
+  // --- ДАННЫЕ ИГРЫ (Локальная логика) ---
   const CARD_TYPES = [
     { type: 'Травоядное', css: 'type-herbivore', power: 2, desc: 'Ест траву (+1 сила)' },
     { type: 'Хищник', css: 'type-predator', power: 4, desc: 'Атакует других. Голоден!' },
@@ -160,11 +230,39 @@
   const elField = document.getElementById('field');
   const elLog = document.getElementById('log');
   const btnFeed = document.getElementById('btnFeed');
+  const playersListEl = document.getElementById('players-list');
 
   function log(msg) {
     const time = new Date().toLocaleTimeString();
     elLog.innerText = `[${time}] ${msg}\n` + elLog.innerText;
   }
+
+  // Функция обновления списка игроков от сервера
+  socket.on('players_list', (players) => {
+      playersListEl.innerHTML = '';
+      const onlineCount = Object.keys(players).length;
+      
+      if (onlineCount === 0) {
+          playersListEl.innerHTML = '<div style="color: #7f8c8d;">Нет игроков онлайн</div>';
+          return;
+      }
+
+      for (const socketId in players) {
+          const name = players[socketId];
+          const div = document.createElement('div');
+          div.className = 'player-item';
+          div.innerHTML = `
+            <div class="player-status status-online"></div>
+            <span>${name}</span>
+          `;
+          playersListEl.appendChild(div);
+      }
+  });
+
+  // Функция вывода системных логов (вход/выход игроков)
+  socket.on('game_log', (msg) => {
+      log(msg);
+  });
 
   function initDeck() {
     deck = [];
@@ -191,18 +289,27 @@
     }
   }
 
-  function createCardElement(card, zoneName) {
+    function createCardElement(card, zoneName) {
     const div = document.createElement('div');
     div.className = `card ${card.css}`;
     div.dataset.id = card.id;
     
+    // --- Логика статуса (твой код) ---
     let statusHtml = '';
     if (card.type === 'Хищник') {
-        statusHtml = card.hunger > 0 ? '<span class="status-dot hungry"></span> Голоден' : '<span class="status-dot fed"></span> Сыт';
+        statusHtml = card.hunger > 0 
+            ? '<span class="status-dot hungry"></span> Голоден' 
+            : '<span class="status-dot fed"></span> Сыт';
     } else if (card.type === 'Травоядное') {
+        // Травоядные всегда считаются "сытыми" по умолчанию, пока не начнется фаза питания
         statusHtml = '<span class="status-dot fed"></span> Травоядное';
+    } 
+    // Для специальных карт (Панцирь, Быстрое, Симбиоз) статус не показываем или можно добавить свой
+    else {
+        statusHtml = ''; 
     }
 
+    // --- ДОПИСАННЫЙ ШАБЛОН КАРТЫ ---
     div.innerHTML = `
       <span class="card-type">${card.type}</span>
       <span class="card-power">Сила: ${card.power}</span>
@@ -210,9 +317,11 @@
       <span class="card-desc">${card.desc}</span>
     `;
 
+    // Обработка клика
     div.addEventListener('click', () => {
-      if (isFeeding) return; 
+      if (isFeeding) return; // Блокируем клики во время фазы питания
       
+      // Подсветка выбранной карты
       document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
       div.classList.add('selected');
 
@@ -221,136 +330,345 @@
       } else if (zoneName === 'hand') {
         playCardFromHand(card);
       }
+      // Если кликнули на поле - можно добавить логику выбора жертвы или активации способности
     });
 
     return div;
   }
-
-  function render() {
-    elDeck.innerHTML = '';
-    elHand.innerHTML = '';
-    elField.innerHTML = '';
-
-    deck.forEach(card => elDeck.appendChild(createCardElement(card, 'deck')));
-    hand.forEach(card => elHand.appendChild(createCardElement(card, 'hand')));
-    field.forEach(card => elField.appendChild(createCardElement(card, 'field')));
-
-    btnFeed.disabled = field.length === 0;
-  }
-
-  function takeCardFromDeck(card) {
-    if (hand.length >= 7) {
-      alert('Рука полна! Сначала сыграйте карты на поле.');
-      return;
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Эволюция: Мультиплеер</title>
+  <!-- Подключаем Socket.IO -->
+  <script src="/socket.io/socket.io.js"></script>
+  
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #2c3e50;
+      color: white;
+      margin: 0;
+      padding: 20px;
+      user-select: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
-    const index = deck.findIndex(c => c.id === card.id);
-    if (index !== -1) {
-      hand.push(deck.splice(index, 1)[0]);
-      log(`Вы взяли карту: ${card.type}`);
-      render();
-    }
-  }
 
-  function playCardFromHand(card) {
-    const index = hand.findIndex(c => c.id === card.id);
-    if (index !== -1) {
-      field.push(hand.splice(index, 1)[0]);
-      log(`Вы выложили на поле: ${card.type}`);
-      render();
-      btnFeed.disabled = false;
-    }
-  }
-
-  function runFeedPhase() {
-    isFeeding = true;
-    btnFeed.disabled = true;
-    log('--- НАЧАЛО ФАЗЫ ПИТАНИЯ ---');
-
-    applySymbiosis();
-    processPredators();
-    processHerbivores();
-
-    field.forEach(c => {
-        c.hasEaten = false; 
-        if(c.type === 'Хищник' && c.hunger > 0) c.hunger = 1; 
-    });
-
-    log('--- КОНЕЦ ФАЗЫ ПИТАНИЯ ---');
-    render();
-    isFeeding = false;
-  }
-
-  function applySymbiosis() {
-    for (let i = field.length - 1; i >= 0; i--) {
-        const card = field[i];
-        if (card.type === 'Симбиоз' && i > 0) {
-            const neighbor = field[i - 1];
-            neighbor.power += 2;
-            log(`✨ Симбиоз (ID:${card.id}) усилил соседа слева (ID:${neighbor.id}) на +2 силы. Новая сила: ${neighbor.power}`);
-        }
-    }
-  }
-
-  function processPredators() {
-    const predators = [...field].filter(c => c.type === 'Хищник');
+    h1 { text-align: center; margin-bottom: 10px; }
     
-    predators.forEach(pred => {
-        if (pred.hunger <= 0 || pred.hasEaten) return;
+    /* Контейнер: Игра слева, Список игроков справа */
+    .main-container {
+      display: flex;
+      width: 100%;
+      max-width: 1400px;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
 
-        const victimIndex = field.findIndex(v => {
-            return v.type === 'Травоядное' && !v.isDead;
-        });
+    .game-area {
+      flex: 3; /* Занимает 75% ширины */
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
 
-        if (victimIndex !== -1) {
-            const victim = field[victimIndex];
-            
-            let isProtected = false;
-            if (victim.type === 'Панцирь') {
-                if (pred.power <= victim.power) {
-                    isProtected = true;
-                    log(`🛡️ Хищник (${pred.power}) не смог пробить панцирь жертвы (${victim.power}).`);
-                }
-            } else if (victim.type === 'Быстрое') {
-                if (Math.random() < 0.5) {
-                    isProtected = true;
-                    log(`🏃 Жертва (Быстрое) увернулась от атаки!`);
-                }
-            }
+    .zone-title { font-weight: bold; color: #f1c40f; margin-bottom: 5px; font-size: 18px; }
 
-            if (!isProtected) {
-                log(`🩸 ХИЩНИК (Сила: ${pred.power}) съел жертву (Сила: ${victim.power})!`);
-                victim.isDead = true;
-                pred.hunger = 0;
-                pred.hasEaten = true;
-                field.splice(victimIndex, 1);
-            } else {
-                log(`😫 Хищник остался голодным.`);
-            }
-        } else {
-            log(`😔 Хищник не нашел доступных жертв.`);
-        }
+    .zone {
+      height: 160px;
+      border: 3px solid #ecf0f1;
+      border-radius: 8px;
+      padding: 10px;
+      overflow-x: auto;
+      display: flex;
+      align-items: center;
+      flex-wrap: nowrap;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+      scrollbar-width: thin;
+      scrollbar-color: #bdc3c7 #34495e;
+    }
+    
+    .zone::-webkit-scrollbar { height: 8px; width: 8px; }
+    .zone::-webkit-scrollbar-track { background: #34495e; border-radius: 4px; }
+    .zone::-webkit-scrollbar-thumb { background: #bdc3c7; border-radius: 4px; }
+
+    .card {
+      width: 90px;
+      height: 130px;
+      background: linear-gradient(145deg, #3498db, #2980b9);
+      border-radius: 12px;
+      position: relative;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      padding: 5px;
+      box-sizing: border-box;
+      min-width: 90px;
+      margin-right: 10px;
+      border: 2px solid transparent;
+    }
+
+    .card:hover { transform: translateY(-5px); box-shadow: 0 8px 15px rgba(0,0,0,0.4); }
+    .card.selected { border-color: #f1c40f; box-shadow: 0 0 10px #f1c40f; z-index: 10; }
+
+    .card-type { font-weight: bold; font-size: 14px; text-transform: uppercase; margin-bottom: 5px; word-break: break-word; }
+    .card-power { font-size: 24px; font-weight: bold; color: white; text-shadow: 1px 1px 2px black; }
+    .card-desc { font-size: 10px; color: rgba(255,255,255,0.8); margin-top: 2px; }
+    
+    .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 4px; vertical-align: middle; }
+    .hungry { background-color: red; }
+    .fed { background-color: green; }
+
+    .type-predator { background: linear-gradient(145deg, #e74c3c, #c0392b); }
+    .type-herbivore { background: linear-gradient(145deg, #2ecc71, #27ae60); }
+    .type-special { background: linear-gradient(145deg, #9b59b6, #8e44ad); }
+
+    .controls {
+      display: flex;
+      justify-content: center;
+      gap: 15px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 12px 24px;
+      font-size: 16px;
+      background-color: #f39c12;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background 0.2s;
+    }
+    button:hover { background-color: #d35400; }
+    button:disabled { background-color: #7f8c8d; cursor: not-allowed; }
+
+    #log {
+      margin-top: 20px;
+      padding: 15px;
+      background: #000;
+      height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      border-radius: 8px;
+      font-family: monospace;
+      color: #2ecc71;
+      border: 1px solid #555;
+      width: 100%;
+    }
+
+    /* --- НОВАЯ ПАНЕЛЬ ИГРОКОВ --- */
+    .players-panel {
+      flex: 1; /* Занимает 25% ширины */
+      min-width: 250px;
+      background: #34495e;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    .panel-header {
+      border-bottom: 2px solid #f1c40f;
+      padding-bottom: 10px;
+      font-weight: bold;
+      font-size: 18px;
+      color: #f1c40f;
+    }
+    .player-item {
+      background: rgba(255,255,255,0.1);
+      padding: 10px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .player-status {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 2px solid white;
+    }
+    .status-online { background-color: #2ecc71; }
+    .status-offline { background-color: #95a5a6; }
+  </style>
+</head>
+<body>
+
+  <h1>🦎 Эволюция: Онлайн Версия</h1>
+
+  <div class="main-container">
+    <!-- ЛЕВАЯ ЧАСТЬ: ИГРА -->
+    <div class="game-area">
+      <div>
+        <div class="zone-title">Колода (нажмите, чтобы взять карту)</div>
+        <div id="deck" class="zone"></div>
+      </div>
+
+      <div>
+        <div class="zone-title">Ваша рука</div>
+        <div id="hand" class="zone"></div>
+      </div>
+
+      <div>
+        <div class="zone-title">Игровое поле (эволюция)</div>
+        <div id="field" class="zone"></div>
+      </div>
+    </div>
+
+    <div style="width: 100%;">
+      <div class="controls">
+        <button onclick="startNewGame()">🔄 Новая игра</button>
+        <button id="btnFeed" onclick="runFeedPhase()" disabled>🍖 Накормить (Фаза питания)</button>
+      </div>
+      
+      <div id="log">Лог событий...</div>
+    </div>
+
+    <!-- ПРАВАЯ ЧАСТЬ: СПИСОК ИГРОКОВ -->
+    <aside class="players-panel">
+      <div class="panel-header">👥 Игроки онлайн</div>
+      <div id="players-list">
+        <!-- Сюда JS будет вставлять игроков -->
+        <div style="color: #7f8c8d;">Ожидание подключения...</div>
+      </div>
+    </aside>
+  </div>
+
+<script>
+  // --- СОЕДИНЕНИЕ С СЕРВЕРОМ ---
+  const socket = io();
+
+  // --- ДАННЫЕ ИГРЫ (Локальная логика) ---
+  const CARD_TYPES = [
+    { type: 'Травоядное', css: 'type-herbivore', power: 2, desc: 'Ест траву (+1 сила)' },
+    { type: 'Хищник', css: 'type-predator', power: 4, desc: 'Атакует других. Голоден!' },
+    { type: 'Панцирь', css: 'type-special', power: 3, desc: '+1 защита (сложно съесть)' },
+    { type: 'Быстрое', css: 'type-special', power: 3, desc: 'Шанс уклонения 50%' },
+    { type: 'Симбиоз', css: 'type-special', power: 1, desc: '+2 силы соседу слева' }
+  ];
+
+  let deck = [];
+  let hand = [];
+  let field = []; 
+  let isFeeding = false; 
+
+  const elDeck = document.getElementById('deck');
+  const elHand = document.getElementById('hand');
+  const elField = document.getElementById('field');
+  const elLog = document.getElementById('log');
+  const btnFeed = document.getElementById('btnFeed');
+  const playersListEl = document.getElementById('players-list');
+
+  function log(msg) {
+    const time = new Date().toLocaleTimeString();
+    elLog.innerText = `[${time}] ${msg}\n` + elLog.innerText;
+  }
+
+  // Функция обновления списка игроков от сервера
+  socket.on('players_list', (players) => {
+      playersListEl.innerHTML = '';
+      const onlineCount = Object.keys(players).length;
+      
+      if (onlineCount === 0) {
+          playersListEl.innerHTML = '<div style="color: #7f8c8d;">Нет игроков онлайн</div>';
+          return;
+      }
+
+      for (const socketId in players) {
+          const name = players[socketId];
+          const div = document.createElement('div');
+          div.className = 'player-item';
+          div.innerHTML = `
+            <div class="player-status status-online"></div>
+            <span>${name}</span>
+          `;
+          playersListEl.appendChild(div);
+      }
+  });
+
+  // Функция вывода системных логов (вход/выход игроков)
+  socket.on('game_log', (msg) => {
+      log(msg);
+  });
+
+  function initDeck() {
+    deck = [];
+    for (let i = 0; i < 30; i++) {
+      const randomType = CARD_TYPES[Math.floor(Math.random() * CARD_TYPES.length)];
+      deck.push({
+        id: i,
+        type: randomType.type,
+        css: randomType.css,
+        power: randomType.power,
+        desc: randomType.desc,
+        isPlayed: false,
+        hunger: (randomType.type === 'Хищник') ? 1 : 0, 
+        hasEaten: false 
+      });
+    }
+    shuffle(deck);
+  }
+
+  function shuffle(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [array[i], array[j]] = [array[j], array[i]];
+    }
+  }
+
+    function createCardElement(card, zoneName) {
+    const div = document.createElement('div');
+    div.className = `card ${card.css}`;
+    div.dataset.id = card.id;
+    
+    // --- Логика статуса (твой код) ---
+    let statusHtml = '';
+    if (card.type === 'Хищник') {
+        statusHtml = card.hunger > 0 
+            ? '<span class="status-dot hungry"></span> Голоден' 
+            : '<span class="status-dot fed"></span> Сыт';
+    } else if (card.type === 'Травоядное') {
+        // Травоядные всегда считаются "сытыми" по умолчанию, пока не начнется фаза питания
+        statusHtml = '<span class="status-dot fed"></span> Травоядное';
+    } 
+    // Для специальных карт (Панцирь, Быстрое, Симбиоз) статус не показываем или можно добавить свой
+    else {
+        statusHtml = ''; 
+    }
+
+    // --- ДОПИСАННЫЙ ШАБЛОН КАРТЫ ---
+    div.innerHTML = `
+      <span class="card-type">${card.type}</span>
+      <span class="card-power">Сила: ${card.power}</span>
+      ${statusHtml}
+      <span class="card-desc">${card.desc}</span>
+    `;
+
+    // Обработка клика
+    div.addEventListener('click', () => {
+      if (isFeeding) return; // Блокируем клики во время фазы питания
+      
+      // Подсветка выбранной карты
+      document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+      div.classList.add('selected');
+
+      if (zoneName === 'deck') {
+        takeCardFromDeck(card);
+      } else if (zoneName === 'hand') {
+        playCardFromHand(card);
+      }
+      // Если кликнули на поле - можно добавить логику выбора жертвы или активации способности
     });
-  }
 
-  function processHerbivores() {
-    field.forEach(card => {
-        if (card.type === 'Травоядное' && !card.isDead && !card.hasEaten) {
-            card.power += 1;
-            card.hasEaten = true; 
-            log(`🌿 Травоядное (ID:${card.id}) поело травы. Сила выросла до: ${card.power}`);
-        }
-    });
+    return div;
   }
-
-  function startNewGame() {
-    initDeck();
-    hand = [];
-    field = [];
-    log('Игра началась! Раздайте карты и нажмите "Накормить".');
-    render();
-  }
-
-  startNewGame();
-</script>
-</body>
-</html>
